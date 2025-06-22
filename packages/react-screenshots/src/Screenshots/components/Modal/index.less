@@ -1,0 +1,50 @@
+@import '../../var.less';
+
+.screenshots-modal-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.screenshots-modal {
+  background-color: #fff;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.screenshots-modal-header {
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+  font-weight: 500;
+  font-size: 16px;
+  position: relative;
+}
+
+.screenshots-modal-content {
+  padding: 16px;
+  overflow: auto;
+  flex: 1;
+}
+
+.screenshots-modal-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  cursor: pointer;
+  font-size: 16px;
+  color: rgba(0, 0, 0, 0.45);
+  &:hover {
+    color: rgba(0, 0, 0, 0.75);
+  }
+}

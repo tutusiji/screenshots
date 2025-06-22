@@ -1,0 +1,114 @@
+@import '../../var.less';
+
+.ocr-modal {
+  .screenshots-modal-content {
+    padding: 0;
+  }
+}
+
+.ocr-modal-container {
+  display: flex;
+  height: 400px;
+}
+
+.ocr-modal-image {
+  width: 40%;
+  padding: 16px;
+  border-right: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  
+  img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+}
+
+.ocr-modal-image-placeholder {
+  color: #999;
+  font-size: 14px;
+}
+
+.ocr-modal-content {
+  width: 60%;
+  display: flex;
+  flex-direction: column;
+}
+
+.ocr-modal-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+}
+
+.ocr-modal-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.ocr-modal-copy-btn {
+  background: none;
+  border: none;
+  color: @border-color;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: 2px;
+  
+  &:hover {
+    background-color: rgba(51, 153, 255, 0.1);
+  }
+}
+
+.ocr-modal-text-area {
+  flex: 1;
+  overflow: auto;
+  background-color: #f9f9f9;
+  border-radius: 4px;
+  padding: 12px;
+}
+
+.ocr-modal-text {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 14px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+.ocr-modal-loading {
+  color: #999;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.ocr-modal-footer {
+  padding: 16px;
+  border-top: 1px solid #f0f0f0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ocr-modal-close-btn {
+  padding: 6px 16px;
+  background-color: @border-color;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  
+  &:hover {
+    background-color: darken(@border-color, 10%);
+  }
+}

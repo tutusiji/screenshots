@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="200px" height="200px" viewBox="0 0 200 200" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>ocr</title>
+    <g id="ocr" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <path d="M100,0 C155.228,0 200,44.772 200,100 C200,155.228 155.228,200 100,200 C44.772,200 0,155.228 0,100 C0,44.772 44.772,0 100,0 Z M100,10 C50.294,10 10,50.294 10,100 C10,149.706 50.294,190 100,190 C149.706,190 190,149.706 190,100 C190,50.294 149.706,10 100,10 Z" id="Circle" fill="#000000" fill-rule="nonzero"></path>
+        <path d="M50,50 L150,50 L150,70 L130,70 L130,150 L110,150 L110,70 L90,70 L90,150 L70,150 L70,70 L50,70 L50,50 Z" id="OCR" fill="#000000" fill-rule="nonzero"></path>
+        <rect id="Rectangle" fill="#000000" x="40" y="100" width="120" height="10"></rect>
+    </g>
+</svg>

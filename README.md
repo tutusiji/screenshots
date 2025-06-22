@@ -28,3 +28,40 @@
 ### 安装
 
 [![NPM](https://nodei.co/npm/react-screenshots.png?downloads=true&downloadRank=true&stars=true)](https://nodei.co/npm/react-screenshots/)
+
+
+// CommonJS 方式
+const Screenshots = require('./electron-screenshots/lib/index.cjs.js');
+// 或
+const Screenshots = require('./electron-screenshots/lib/index.js'); // ES 模块版本
+----------------
+使用示例 ：
+import { app, globalShortcut } from 'electron';
+const Screenshots = require('./electron-screenshots/lib/index.cjs.js');
+
+app.whenReady().then(() => {
+  const screenshots = new Screenshots();
+  
+  // 注册快捷键启动截图
+  globalShortcut.register('ctrl+shift+a', () => {
+    screenshots.startCapture();
+  });
+  
+  // 点击确定按钮回调事件
+  screenshots.on('ok', (e, buffer, bounds) => {
+    console.log('capture', buffer, bounds);
+  });
+  
+  // 点击取消按钮回调事件
+  screenshots.on('cancel', () => {
+    console.log('capture', 'cancel');
+  });
+});
+
+
+
+
+
+
+
+https://at.alicdn.com/t/project/572327/6f652e79-fb8b-4164-9fb3-40a705433d93.html?spm=a313x.7781069.1998910419.34
