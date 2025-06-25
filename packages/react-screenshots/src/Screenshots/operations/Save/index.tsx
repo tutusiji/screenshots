@@ -16,20 +16,18 @@ export default function Save (): ReactElement {
 
   const onClick = useCallback(() => {
     historyDispatcher.clearSelect()
-    setTimeout(() => {
-      if (!canvasContextRef.current || !image || !bounds) {
-        return
-      }
-      composeImage({
-        image,
-        width,
-        height,
-        history,
-        bounds
-      }).then(blob => {
-        call('onSave', blob, bounds)
-        reset()
-      })
+    if (!canvasContextRef.current || !image || !bounds) {
+      return
+    }
+    composeImage({
+      image,
+      width,
+      height,
+      history,
+      bounds
+    }).then(blob => {
+      call('onSave', blob, bounds)
+      reset()
     })
   }, [canvasContextRef, historyDispatcher, image, width, height, history, bounds, call, reset])
 

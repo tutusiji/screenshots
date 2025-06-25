@@ -85,7 +85,7 @@ export default function Translate (): ReactElement {
           setLoading(false)
         })
       }
-      
+
       // 清除选中状态（在获取选中区域并处理后）
       historyDispatcher.clearSelect()
     } else {

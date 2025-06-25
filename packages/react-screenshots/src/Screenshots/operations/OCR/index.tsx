@@ -1,17 +1,22 @@
-import React, { ReactElement, useCallback, useState } from 'react'
+import React, { ReactElement, useCallback, useState, useEffect } from 'react'
 import useCursor from '../../hooks/useCursor'
-import useHistory from '../../hooks/useHistory'
 import useLang from '../../hooks/useLang'
 import useOperation from '../../hooks/useOperation'
 import ScreenshotsButton from '../../ScreenshotsButton'
-import { HistoryItemType } from '../../types'
 import OCRModal from '../../components/OCRModal'
 import { blobToUrl, recognizeText, revokeUrl } from '../../services/api'
 import composeImage from '../../composeImage'
+import useStore from '../../hooks/useStore'
+import useCanvasContextRef from '../../hooks/useCanvasContextRef'
+import useCall from '../../hooks/useCall'
+import useReset from '../../hooks/useReset'
 
 export default function OCR (): ReactElement {
   const lang = useLang()
-  const [history, historyDispatcher] = useHistory()
+  const { image, width, height } = useStore()
+  const canvasContextRef = useCanvasContextRef()
+  const call = useCall()
+  const reset = useReset()
   const [operation, operationDispatcher] = useOperation()
   const [, cursorDispatcher] = useCursor()
   const [modalVisible, setModalVisible] = useState(false)
@@ -40,52 +45,39 @@ export default function OCR (): ReactElement {
       return
     }
     selectOCR()
-
-    // 获取当前选中区域的图像
-    const selectedItem = history.stack.find(item =>
-      item.type === HistoryItemType.Source && 'isSelected' in item && item.isSelected
-    )
-
-    if (selectedItem) {
-      // 获取选中区域的图像
-      const bounds = selectedItem.data
-      const image = document.querySelector('.screenshots')?.querySelector('img')
-
-      if (image && bounds) {
-        setLoading(true)
-        setModalVisible(true)
-        setRecognizedText('')
-
-        // 合成图像
-        composeImage({
-          image: image as HTMLImageElement,
-          width: image.width,
-          height: image.height,
-          history,
-          bounds
-        }).then(blob => {
-          // 将Blob转换为URL
-          const url = blobToUrl(blob)
-          setImageUrl(url)
-
-          // 调用OCR API
-          return recognizeText(url)
-        }).then(text => {
-          setRecognizedText(text)
-          setLoading(false)
-        }).catch(error => {
-          console.error('OCR识别失败', error)
-          setRecognizedText('OCR识别失败，请重试')
-          setLoading(false)
-        })
-      }
+    
+    // 直接合成截图并弹出OCR弹窗
+    if (canvasContextRef.current && image && width && height) {
+      // 使用整个图片作为截图区域
+      const bounds = { x: 0, y: 0, width, height }
       
-      // 清除选中状态（在获取选中区域并处理后）
-      historyDispatcher.clearSelect()
-    } else {
-      alert('请先选择一个区域进行文字识别')
+      // 立即关闭截图操作
+      reset()
+      // 设置加载状态并弹出弹窗
+      setLoading(true)
+      setModalVisible(true)
+      setRecognizedText('')
+      
+      // 合成截图
+      composeImage({
+        image,
+        width,
+        height,
+        bounds
+      }).then(blob => {
+        const url = blobToUrl(blob)
+        setImageUrl(url)
+        return recognizeText(url)
+      }).then(text => {
+        setRecognizedText(text)
+        setLoading(false)
+      }).catch(error => {
+        console.error('OCR识别失败', error)
+        setRecognizedText('OCR识别失败，请重试')
+        setLoading(false)
+      })
     }
-  }, [checked, selectOCR, historyDispatcher, history])
+  }, [checked, selectOCR, canvasContextRef, image, width, height, reset])
 
   return (
     <>

@@ -20,6 +20,13 @@ export default function Ok (): ReactElement {
       if (!canvasContextRef.current || !image || !bounds) {
         return
       }
+      
+      // 触发自定义事件，通知OCR组件处理识别
+      const customEvent = new CustomEvent('screenshots-ok-clicked', {
+        detail: { bounds }
+      })
+      window.dispatchEvent(customEvent)
+      
       composeImage({
         image,
         width,
@@ -28,7 +35,7 @@ export default function Ok (): ReactElement {
         bounds
       }).then(blob => {
         call('onOk', blob, bounds)
-        reset()
+        // 不在这里 reset，由 OCR 组件统一处理截图关闭和弹窗显示
       })
     })
   }, [canvasContextRef, historyDispatcher, image, width, height, history, bounds, call, reset])

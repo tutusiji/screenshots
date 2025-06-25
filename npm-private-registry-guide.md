@@ -268,7 +268,8 @@ npm view electron-screenshots --registry http://localhost:4873/
 
    ```bash
    npm install react-screenshots electron-screenshots
-   npm install react-screenshots@0.5.23 electron-screenshots@0.5.28 --registry http://localhost:4873/
+   npm install react-screenshots@1.1.5 electron-screenshots@1.1.5 --registry http://localhost:4873/
+   npm install react-screenshots@1.1.5 --registry http://localhost:4873/
    ```
 
    或在 `package.json` 中指定依赖：
