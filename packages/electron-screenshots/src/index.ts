@@ -45,40 +45,45 @@ export default class Screenshots extends Events {
   // 截图窗口对象
   public $win: BrowserWindow | null = null;
 
-  public $view: BrowserView = new BrowserView({
-    webPreferences: {
-      preload: require.resolve('./preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
+  public $view: BrowserView;
 
   private logger: Logger;
 
   private singleWindow: boolean;
 
-  private isReady = new Promise<void>((resolve) => {
-    ipcMain.once('SCREENSHOTS:ready', () => {
-      this.logger('SCREENSHOTS:ready');
+  private isReady: Promise<void>;
 
-      resolve();
-    });
-  });
+  // 静态变量用于管理全局IPC监听器
+  private static ipcListenersRegistered = false;
 
   constructor(opts?: ScreenshotsOpts) {
     super();
     this.logger = opts?.logger || debug('electron-screenshots');
     this.singleWindow = opts?.singleWindow || false;
+
+    // 创建新的BrowserView实例
+    this.$view = new BrowserView({
+      webPreferences: {
+        preload: require.resolve('./preload.js'),
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+
+    // 初始化isReady Promise
+    this.isReady = new Promise<void>((resolve) => {
+      const readyHandler = () => {
+        this.logger('SCREENSHOTS:ready');
+        resolve();
+      };
+      ipcMain.once('SCREENSHOTS:ready', readyHandler);
+    });
+
     this.listenIpc();
     this.$view.webContents.loadURL(
       `file://${require.resolve('react-screenshots/electron/electron.html')}`,
     );
-    // this.$view.webContents.loadURL(
-    //   `file://${require.resolve('../react-screenshots/electron/electron.html')}`,
-    // );
-    // this.$view.webContents.loadURL(
-    //   `file://${require.resolve('d:/CodeLab/screenshots/packages/react-screenshots/electron/electron.html')}`,
-    // );
+
     if (opts?.lang) {
       this.setLang(opts.lang);
     }
@@ -89,6 +94,9 @@ export default class Screenshots extends Events {
    */
   public async startCapture(): Promise<void> {
     this.logger('startCapture');
+
+    // 设置当前实例为活跃实例
+    this.setAsActiveInstance();
 
     const display = getDisplay();
 
@@ -106,6 +114,11 @@ export default class Screenshots extends Events {
     this.logger('endCapture');
     await this.reset();
 
+    // 清理活跃实例
+    if (Screenshots.activeInstance === this) {
+      Screenshots.activeInstance = null;
+    }
+
     if (!this.$win) {
       return;
     }
@@ -122,6 +135,42 @@ export default class Screenshots extends Events {
     } else {
       this.$win.destroy();
     }
+  }
+
+  /**
+   * 销毁BrowserView，清理渲染进程资源
+   */
+  private destroyBrowserView(): void {
+    this.logger('destroyBrowserView');
+
+    // 清理活跃实例
+    if (Screenshots.activeInstance === this) {
+      Screenshots.activeInstance = null;
+    }
+
+    // 销毁BrowserView
+    if (this.$view && !this.$view.webContents.isDestroyed()) {
+      this.$view.webContents.destroy();
+    }
+  }
+
+  /**
+   * 销毁Screenshots实例，清理所有资源
+   */
+  public destroy(): void {
+    this.logger('destroy');
+
+    // 销毁BrowserView
+    this.destroyBrowserView();
+
+    // 销毁窗口
+    if (this.$win && !this.$win.isDestroyed()) {
+      this.$win.destroy();
+      this.$win = null;
+    }
+
+    // 移除所有事件监听器
+    this.removeAllListeners();
   }
 
   /**
@@ -214,6 +263,11 @@ export default class Screenshots extends Events {
       this.$win.on('closed', () => {
         this.emit('windowClosed', this.$win);
         this.$win = null;
+
+        // 如果不是singleWindow模式，窗口关闭时自动销毁BrowserView
+        if (!this.singleWindow) {
+          this.destroyBrowserView();
+        }
       });
     }
 
@@ -317,90 +371,124 @@ export default class Screenshots extends Events {
    * 绑定ipc时间处理
    */
   private listenIpc(): void {
-    /**
-     * OK事件
-     */
-    ipcMain.on('SCREENSHOTS:ok', (e, buffer: Buffer, data: ScreenshotsData) => {
-      this.logger(
-        'SCREENSHOTS:ok buffer.length %d, data: %o',
-        buffer.length,
-        data,
-      );
+    // 使用静态变量确保全局只注册一次IPC监听器
+    if (Screenshots.ipcListenersRegistered) {
+      return;
+    }
 
-      const event = new Event();
-      this.emit('ok', event, buffer, data);
-      if (event.defaultPrevented) {
-        return;
-      }
-      clipboard.writeImage(nativeImage.createFromBuffer(buffer));
-      this.endCapture();
-    });
-    /**
-     * CANCEL事件
-     */
-    ipcMain.on('SCREENSHOTS:cancel', () => {
-      this.logger('SCREENSHOTS:cancel');
+    Screenshots.ipcListenersRegistered = true;
 
-      const event = new Event();
-      this.emit('cancel', event);
-      if (event.defaultPrevented) {
-        return;
-      }
-      this.endCapture();
-    });
+    // 先移除已存在的监听器，避免重复注册
+    ipcMain.removeAllListeners('SCREENSHOTS:ok');
+    ipcMain.removeAllListeners('SCREENSHOTS:cancel');
+    ipcMain.removeAllListeners('SCREENSHOTS:save');
 
     /**
-     * SAVE事件
+     * OK事件 - 使用静态方法处理，避免this绑定问题
      */
-    ipcMain.on(
-      'SCREENSHOTS:save',
-      async (e, buffer: Buffer, data: ScreenshotsData) => {
-        this.logger(
-          'SCREENSHOTS:save buffer.length %d, data: %o',
-          buffer.length,
-          data,
-        );
+    ipcMain.on('SCREENSHOTS:ok', Screenshots.handleOkEvent);
 
-        const event = new Event();
-        this.emit('save', event, buffer, data);
-        if (event.defaultPrevented || !this.$win) {
-          return;
-        }
+    /**
+     * CANCEL事件 - 使用静态方法处理，避免this绑定问题
+     */
+    ipcMain.on('SCREENSHOTS:cancel', Screenshots.handleCancelEvent);
 
-        const time = new Date();
-        const year = time.getFullYear();
-        const month = padStart(time.getMonth() + 1, 2, '0');
-        const date = padStart(time.getDate(), 2, '0');
-        const hours = padStart(time.getHours(), 2, '0');
-        const minutes = padStart(time.getMinutes(), 2, '0');
-        const seconds = padStart(time.getSeconds(), 2, '0');
-        const milliseconds = padStart(time.getMilliseconds(), 3, '0');
-
-        this.$win.setAlwaysOnTop(false);
-
-        const { canceled, filePath } = await dialog.showSaveDialog(this.$win, {
-          defaultPath: `${year}${month}${date}${hours}${minutes}${seconds}${milliseconds}.png`,
-          filters: [
-            { name: 'Image (png)', extensions: ['png'] },
-            { name: 'All Files', extensions: ['*'] },
-          ],
-        });
-
-        if (!this.$win) {
-          this.emit('afterSave', new Event(), buffer, data, false); // isSaved = false
-          return;
-        }
-
-        this.$win.setAlwaysOnTop(true);
-        if (canceled || !filePath) {
-          this.emit('afterSave', new Event(), buffer, data, false); // isSaved = false
-          return;
-        }
-
-        await fs.writeFile(filePath, buffer);
-        this.emit('afterSave', new Event(), buffer, data, true); // isSaved = true
-        this.endCapture();
-      },
-    );
+    /**
+     * SAVE事件 - 使用静态方法处理，避免this绑定问题
+     */
+    ipcMain.on('SCREENSHOTS:save', Screenshots.handleSaveEvent);
   }
+
+  // 静态变量用于存储当前活跃的Screenshots实例
+  private static activeInstance: Screenshots | null = null;
+
+  // 设置当前活跃的实例
+  private setAsActiveInstance(): void {
+    Screenshots.activeInstance = this;
+  }
+
+  // 静态事件处理方法
+  private static handleOkEvent = (e: any, buffer: Buffer, data: ScreenshotsData) => {
+    const instance = Screenshots.activeInstance;
+    if (!instance) return;
+
+    instance.logger(
+      'SCREENSHOTS:ok buffer.length %d, data: %o',
+      buffer.length,
+      data,
+    );
+
+    const event = new Event();
+    instance.emit('ok', event, buffer, data);
+    if (event.defaultPrevented) {
+      return;
+    }
+    clipboard.writeImage(nativeImage.createFromBuffer(buffer));
+    instance.endCapture();
+  };
+
+  private static handleCancelEvent = () => {
+    const instance = Screenshots.activeInstance;
+    if (!instance) return;
+
+    instance.logger('SCREENSHOTS:cancel');
+
+    const event = new Event();
+    instance.emit('cancel', event);
+    if (event.defaultPrevented) {
+      return;
+    }
+    instance.endCapture();
+  };
+
+  private static handleSaveEvent = async (e: any, buffer: Buffer, data: ScreenshotsData) => {
+    const instance = Screenshots.activeInstance;
+    if (!instance) return;
+
+    instance.logger(
+      'SCREENSHOTS:save buffer.length %d, data: %o',
+      buffer.length,
+      data,
+    );
+
+    const event = new Event();
+    instance.emit('save', event, buffer, data);
+    if (event.defaultPrevented || !instance.$win) {
+      return;
+    }
+
+    const time = new Date();
+    const year = time.getFullYear();
+    const month = padStart(time.getMonth() + 1, 2, '0');
+    const date = padStart(time.getDate(), 2, '0');
+    const hours = padStart(time.getHours(), 2, '0');
+    const minutes = padStart(time.getMinutes(), 2, '0');
+    const seconds = padStart(time.getSeconds(), 2, '0');
+    const milliseconds = padStart(time.getMilliseconds(), 3, '0');
+
+    instance.$win.setAlwaysOnTop(false);
+
+    const { canceled, filePath } = await dialog.showSaveDialog(instance.$win, {
+      defaultPath: `${year}${month}${date}${hours}${minutes}${seconds}${milliseconds}.png`,
+      filters: [
+        { name: 'Image (png)', extensions: ['png'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+
+    if (!instance.$win) {
+      instance.emit('afterSave', new Event(), buffer, data, false); // isSaved = false
+      return;
+    }
+
+    instance.$win.setAlwaysOnTop(true);
+    if (canceled || !filePath) {
+      instance.emit('afterSave', new Event(), buffer, data, false); // isSaved = false
+      return;
+    }
+
+    await fs.writeFile(filePath, buffer);
+    instance.emit('afterSave', new Event(), buffer, data, true); // isSaved = true
+    instance.endCapture();
+  };
 }

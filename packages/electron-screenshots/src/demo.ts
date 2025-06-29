@@ -2,8 +2,10 @@
 import { app, BrowserWindow, globalShortcut } from 'electron';
 import Screenshots from '.';
 
+let screenshots: Screenshots;
+
 app.whenReady().then(() => {
-  const screenshots = new Screenshots({
+  screenshots = new Screenshots({
     lang: {
       operation_rectangle_title: '矩形2323',
     },
@@ -61,5 +63,12 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  // 应用退出前清理Screenshots资源
+  if (screenshots) {
+    screenshots.destroy();
   }
 });
