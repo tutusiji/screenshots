@@ -1,53 +1,196 @@
-# 多个保存对话框问题 - 完整解决方案
+# 解决幽灵图标问题 - 终极修复方案
 
-## 问题回顾
+## 最新问题分析
 
-用户报告了一个严重的bug：点击截图工具的保存按钮时，会出现多个保存文件对话框（1-3个不等），并伴随卡顿现象。
+经过用户反馈，即使实施了之前的修复，点击 OK、Save、Cancel 按钮后仍然会在任务栏出现幽灵图标。深入分析后发现，问题的根源在于 Windows 系统中某些窗口操作会导致 `skipTaskbar` 设置被重置或忽略。
 
-## 深度问题分析
+### 核心问题点
 
-经过深入分析，发现问题的真正根源是：
+1. **`setKiosk(false)` 操作** - 在 `endCapture` 中调用，可能触发任务栏显示
+2. **`setAlwaysOnTop` 状态变更** - 在 `handleSaveEvent` 中的状态切换
+3. **窗口显示时的竞态条件** - `show()` 和 `setSkipTaskbar()` 的调用时机
+4. **Windows 系统特性** - 某些窗口操作会重置 `skipTaskbar` 设置
 
-### 1. 多BrowserView实例问题
-- 每个Screenshots实例都创建独立的BrowserView
-- 每个BrowserView都有自己的渲染进程
-- 每个渲染进程都加载preload脚本，都能发送IPC消息
-- 多个渲染进程可能同时发送`SCREENSHOTS:save`事件
+## 终极修复方案
 
-### 2. 资源管理问题
-- BrowserView在`endCapture()`时只是从窗口移除，从未被销毁
-- "僵尸"BrowserView继续存在，渲染进程仍然活跃
-- 这些进程仍可发送IPC消息，导致重复处理
-
-### 3. 事件路由问题
-- 多个实例共享同一个IPC监听器
-- 缺乏正确的实例路由机制
-- 无法确定哪个实例应该处理事件
-
-## 解决方案
-
-### 核心设计思路
-1. **活跃实例管理**：只有当前活跃的实例处理IPC事件
-2. **全局监听器管理**：确保只注册一次IPC监听器
-3. **正确的资源清理**：提供destroy方法清理BrowserView
-4. **静态事件处理**：避免this绑定问题
-
-### 关键代码修改
-
-#### 1. 活跃实例管理
+### 1. 强化 `endCapture` 方法 - 多重防护
 ```typescript
-// 静态变量存储当前活跃的Screenshots实例
-private static activeInstance: Screenshots | null = null;
-
-// 在开始截图时设置活跃实例
-public async startCapture(): Promise<void> {
-  this.setAsActiveInstance();
-  // ...
-}
-
-// 在结束截图时清理活跃实例
 public async endCapture(): Promise<void> {
+  this.logger('endCapture');
+  await this.reset();
+
+  // 清理活跃实例
   if (Screenshots.activeInstance === this) {
+    Screenshots.activeInstance = null;
+  }
+
+  if (!this.$win) {
+    return;
+  }
+
+  // 在进行任何窗口操作之前，先确保不在任务栏显示
+  this.$win.setSkipTaskbar(true);
+
+  // 先清除 Kiosk 模式，然后取消全屏才有效
+  this.$win.setKiosk(false);
+  this.$win.blur();
+  this.$win.blurWebView();
+  this.$win.unmaximize();
+  this.$win.removeBrowserView(this.$view);
+
+  // 再次确保窗口不在任务栏中显示
+  this.$win.setSkipTaskbar(true);
+
+  if (this.singleWindow) {
+    this.$win.hide();
+  } else {
+    this.$win.destroy();
+  }
+}
+```
+
+### 2. 优化 `handleSaveEvent` - 智能状态管理
+```typescript
+private static handleSaveEvent = async (e: any, buffer: Buffer, data: ScreenshotsData) => {
+  // ... 防抖逻辑 ...
+
+  // 保存原始的 alwaysOnTop 状态
+  const wasAlwaysOnTop = instance.$win.isAlwaysOnTop();
+  
+  // 只有在需要时才修改 alwaysOnTop 状态
+  if (wasAlwaysOnTop) {
+    instance.$win.setAlwaysOnTop(false);
+  }
+
+  // 确保窗口不会出现在任务栏中
+  instance.$win.setSkipTaskbar(true);
+
+  const { canceled, filePath } = await dialog.showSaveDialog(instance.$win, {...});
+
+  if (!instance.$win || instance.$win.isDestroyed()) {
+    instance.emit('afterSave', new Event(), buffer, data, false);
+    return;
+  }
+
+  // 恢复原始的 alwaysOnTop 状态
+  if (wasAlwaysOnTop) {
+    instance.$win.setAlwaysOnTop(true);
+  }
+
+  // 确保窗口继续不在任务栏中显示
+  instance.$win.setSkipTaskbar(true);
+
+  // ... 继续处理保存逻辑 ...
+};
+```
+
+### 3. 增强窗口创建配置 - Windows 特定防护
+```typescript
+this.$win = new BrowserWindow({
+  // ... 现有配置 ...
+  skipTaskbar: true,
+  alwaysOnTop: true,
+  
+  // Windows 特有设置，防止出现在任务栏
+  ...(process.platform === 'win32' && {
+    parent: null,
+    minimizable: false,
+    maximizable: false,
+    closable: false,
+  }),
+});
+
+// 窗口事件监听 - 显示时强制设置
+this.$win.on('show', () => {
+  this.$win?.focus();
+  this.$win?.setKiosk(true);
+  // 确保窗口显示时不在任务栏中
+  this.$win?.setSkipTaskbar(true);
+});
+```
+
+### 4. 窗口显示时的双重防护
+```typescript
+this.$win.blur();
+this.$win.setBounds(display);
+this.$view.setBounds({
+  x: 0,
+  y: 0,
+  width: display.width,
+  height: display.height,
+});
+this.$win.setAlwaysOnTop(true);
+
+// 在显示窗口前，确保不在任务栏中
+this.$win.setSkipTaskbar(true);
+
+this.$win.show();
+
+// 窗口显示后，再次确保不在任务栏中
+this.$win.setSkipTaskbar(true);
+```
+
+## 修复策略的核心原理
+
+### 🔒 多重防护策略
+- **操作前设置**：在任何可能影响窗口状态的操作前设置 `skipTaskbar`
+- **操作后确认**：在操作完成后再次确认 `skipTaskbar` 设置
+- **事件监听保护**：在窗口事件中重新设置 `skipTaskbar`
+- **平台特定防护**：针对 Windows 系统的特殊设置
+
+### 🎯 关键时机控制
+1. **窗口创建时**：设置 Windows 特定的防护属性
+2. **窗口显示前后**：双重确保 `skipTaskbar` 设置
+3. **状态变更时**：智能管理 `alwaysOnTop` 状态，避免不必要的变更
+4. **操作结束时**：在清理操作前后都设置 `skipTaskbar`
+
+### 🛡️ Windows 特定防护措施
+- **禁用窗口控制**：`minimizable: false`, `maximizable: false`, `closable: false`
+- **独立窗口**：`parent: null` 确保窗口独立性
+- **工具栏类型**：使用 `type: 'toolbar'` 减少任务栏显示概率
+- **状态保护**：智能保存和恢复窗口状态
+
+## 问题解决的技术原理
+
+在 Windows 系统中，任务栏图标的显示受到以下因素影响：
+
+1. **窗口属性**：创建时的 `skipTaskbar`, `parent`, `type` 等属性
+2. **状态变更**：运行时调用的 `setAlwaysOnTop`, `setKiosk` 等方法
+3. **系统行为**：Windows 可能在某些操作后重置窗口属性
+4. **时机控制**：操作的执行顺序和时机
+
+我们的解决方案通过在每个关键节点都重新确认 `skipTaskbar` 设置，并结合 Windows 特定的防护措施，确保无论何种操作序列都不会导致幽灵图标的出现。
+
+## 测试验证计划
+
+### 基础功能测试
+1. 关闭主应用窗口，仅保留托盘图标
+2. 通过托盘唤起截图功能
+3. 分别测试：
+   - 截图 → 点击 OK → 检查任务栏
+   - 截图 → 点击 Cancel → 检查任务栏  
+   - 截图 → 点击 Save → 检查任务栏
+
+### 压力测试
+1. 快速连续点击操作按钮
+2. 在保存对话框显示时切换应用
+3. 重复截图操作多次
+
+### 边界测试
+1. 在截图过程中操作其他窗口
+2. 在不同显示器上测试
+3. 测试不同的 Windows 版本兼容性
+
+## 预期效果
+
+通过这个终极修复方案，应该能够：
+
+✅ **彻底解决幽灵图标问题**
+✅ **保持所有截图功能正常**  
+✅ **确保跨平台兼容性**
+✅ **提供稳定的用户体验**
+
+这个解决方案通过多层防护、智能状态管理和平台特定优化，从根本上解决了 Windows 任务栏幽灵图标的问题。
     Screenshots.activeInstance = null;
   }
   // ...

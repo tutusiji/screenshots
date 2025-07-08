@@ -2,18 +2,22 @@
 import { app, BrowserWindow, globalShortcut } from 'electron';
 import Screenshots from '.';
 
-let screenshots: Screenshots;
+let screenshots: Screenshots | null = null;
 
 app.whenReady().then(() => {
-  screenshots = new Screenshots({
-    lang: {
-      operation_rectangle_title: '矩形2323',
-    },
-    singleWindow: true,
-  });
-  screenshots.$view.webContents.openDevTools();
-
   globalShortcut.register('ctrl+shift+a', () => {
+    // 每次截图都创建新的实例，避免实例被销毁后的状态问题
+    if (screenshots) {
+      screenshots.destroy(); // 清理可能存在的旧实例
+    }
+    
+    screenshots = new Screenshots({
+      lang: {
+        operation_rectangle_title: '矩形2323',
+      },
+      singleWindow: false, // 改为false，每次都销毁窗口
+    });
+    
     screenshots.startCapture();
   });
 
@@ -53,11 +57,9 @@ app.whenReady().then(() => {
     console.log('capture', buffer, bounds);
   });
 
-  const mainWin = new BrowserWindow({
-    show: true,
-  });
-  mainWin.removeMenu();
-  mainWin.loadURL('https://github.com/nashaofu');
+  // 不创建主窗口，看看是否是主窗口导致的问题
+  console.log('Ready! Press Ctrl+Shift+A to take screenshot');
+  console.log('No main window created - testing ghost icon fix');
 });
 
 app.on('window-all-closed', () => {

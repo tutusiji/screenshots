@@ -96,6 +96,7 @@ app.whenReady().then(() => {
     show: true,
     width: 800,
     height: 600,
+    skipTaskbar: true,
   });
   mainWin.removeMenu();
   mainWin.loadURL('data:text/html,<h1>Screenshots IPC监听器测试</h1><p>查看控制台输出</p>');

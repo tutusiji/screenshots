@@ -45,6 +45,9 @@ export default class Screenshots extends Events {
   // 截图窗口对象
   public $win: BrowserWindow | null = null;
 
+  // 隐藏的父窗口，用于确保截图窗口不在任务栏显示
+  private static $hiddenParent: BrowserWindow | null = null;
+
   public $view: BrowserView;
 
   private logger: Logger;
@@ -56,10 +59,22 @@ export default class Screenshots extends Events {
   // 静态变量用于管理全局IPC监听器
   private static ipcListenersRegistered = false;
 
+  // 添加实例计数器
+  private static instanceCount = 0;
+
+  // 添加保存状态标志，防止重复触发
+  private static isSaving = false;
+
+  // 添加保存任务的唯一标识符，用于防抖
+  private static saveTaskId = 0;
+
   constructor(opts?: ScreenshotsOpts) {
     super();
     this.logger = opts?.logger || debug('electron-screenshots');
     this.singleWindow = opts?.singleWindow || false;
+
+    // 增加实例计数
+    Screenshots.instanceCount += 1;
 
     // 创建新的BrowserView实例
     this.$view = new BrowserView({
@@ -67,8 +82,19 @@ export default class Screenshots extends Events {
         preload: require.resolve('./preload.js'),
         nodeIntegration: false,
         contextIsolation: true,
+        // 添加额外的安全设置
+        sandbox: false,
+        webSecurity: true,
       },
     });
+
+    // 确保BrowserView不会触发任务栏显示
+    if (this.$view.webContents) {
+      // 阻止新窗口创建
+      this.$view.webContents.setWindowOpenHandler(() => {
+        return { action: 'deny' };
+      });
+    }
 
     // 初始化isReady Promise
     this.isReady = new Promise<void>((resolve) => {
@@ -79,7 +105,7 @@ export default class Screenshots extends Events {
       ipcMain.once('SCREENSHOTS:ready', readyHandler);
     });
 
-    this.listenIpc();
+    Screenshots.listenIpc();
     this.$view.webContents.loadURL(
       `file://${require.resolve('react-screenshots/electron/electron.html')}`,
     );
@@ -123,12 +149,19 @@ export default class Screenshots extends Events {
       return;
     }
 
-    // 先清除 Kiosk 模式，然后取消全屏才有效
+    // 在进行任何窗口操作之前，先确保不在任务栏显示
+    this.$win.setSkipTaskbar(true);
+
+    // 先清除全屏和 Kiosk 模式，然后取消全屏才有效
+    this.$win.setFullScreen(false);
     this.$win.setKiosk(false);
     this.$win.blur();
     this.$win.blurWebView();
     this.$win.unmaximize();
     this.$win.removeBrowserView(this.$view);
+
+    // 再次确保窗口不在任务栏中显示
+    this.$win.setSkipTaskbar(true);
 
     if (this.singleWindow) {
       this.$win.hide();
@@ -149,8 +182,19 @@ export default class Screenshots extends Events {
     }
 
     // 销毁BrowserView
-    if (this.$view && !this.$view.webContents.isDestroyed()) {
-      this.$view.webContents.destroy();
+    if (this.$view) {
+      // 先从窗口中移除 BrowserView
+      if (this.$win && !this.$win.isDestroyed()) {
+        this.$win.removeBrowserView(this.$view);
+      }
+
+      // 检查 webContents 是否已销毁，如果没有则尝试销毁 BrowserView
+      if (!this.$view.webContents.isDestroyed()) {
+        // 在较新版本的 Electron 中，可以直接销毁 BrowserView
+        if (typeof (this.$view as any).destroy === 'function') {
+          (this.$view as any).destroy();
+        }
+      }
     }
   }
 
@@ -160,17 +204,34 @@ export default class Screenshots extends Events {
   public destroy(): void {
     this.logger('destroy');
 
+    // 减少实例计数
+    Screenshots.instanceCount = Math.max(0, Screenshots.instanceCount - 1);
+
     // 销毁BrowserView
     this.destroyBrowserView();
 
     // 销毁窗口
     if (this.$win && !this.$win.isDestroyed()) {
+      // 销毁前确保不在任务栏显示
+      this.$win.setSkipTaskbar(true);
       this.$win.destroy();
       this.$win = null;
     }
 
     // 移除所有事件监听器
     this.removeAllListeners();
+
+    // 如果没有实例了，清理全局 IPC 监听器
+    if (Screenshots.instanceCount <= 0) {
+      Screenshots.cleanupIpcListeners();
+      Screenshots.isSaving = false; // 重置保存状态
+      
+      // 清理隐藏的父窗口
+      if (Screenshots.$hiddenParent && !Screenshots.$hiddenParent.isDestroyed()) {
+        Screenshots.$hiddenParent.destroy();
+        Screenshots.$hiddenParent = null;
+      }
+    }
   }
 
   /**
@@ -208,6 +269,9 @@ export default class Screenshots extends Events {
 
     // 复用未销毁的窗口
     if (!this.$win || this.$win?.isDestroyed?.()) {
+      // 暂时不使用隐藏父窗口，看看是否是它导致的问题
+      // Screenshots.ensureHiddenParent();
+
       const windowTypes: Record<string, string | undefined> = {
         darwin: 'panel',
         // linux 必须设置为 undefined，否则会在部分系统上不能触发focus 事件
@@ -216,48 +280,81 @@ export default class Screenshots extends Events {
         win32: 'toolbar',
       };
 
-      this.$win = new BrowserWindow({
-        title: 'screenshots',
-        x: display.x,
-        y: display.y,
-        width: display.width,
-        height: display.height,
-        useContentSize: true,
-        type: windowTypes[process.platform],
-        frame: false,
-        show: false,
-        autoHideMenuBar: true,
-        transparent: true,
-        resizable: false,
-        movable: false,
-        minimizable: false,
-        maximizable: false,
-        // focusable 必须设置为 true, 否则窗口不能及时响应esc按键，输入框也不能输入
-        focusable: true,
-        skipTaskbar: true,
-        alwaysOnTop: true,
-        /**
-         * linux 下必须设置为false，否则不能全屏显示在最上层
-         * mac 下设置为false，否则可能会导致程序坞不恢复问题，且与 kiosk 模式冲突
-         */
-        fullscreen: false,
-        // mac fullscreenable 设置为 true 会导致应用崩溃
-        fullscreenable: false,
-        kiosk: true,
-        backgroundColor: '#00000000',
-        titleBarStyle: 'hidden',
-        hasShadow: false,
-        paintWhenInitiallyHidden: false,
-        // mac 特有的属性
-        roundedCorners: false,
-        enableLargerThanScreen: false,
-        acceptFirstMouse: true,
-      });
+      // 在Windows上使用完全不同的策略
+      if (process.platform === 'win32') {
+        this.$win = new BrowserWindow({
+          width: display.width,
+          height: display.height,
+          x: display.x,
+          y: display.y,
+          show: false,
+          frame: false,
+          transparent: true,
+          alwaysOnTop: true,
+          skipTaskbar: true,
+          focusable: true,
+          resizable: false,
+          movable: false,
+          minimizable: false,
+          maximizable: false,
+          closable: false,
+          autoHideMenuBar: true,
+          titleBarStyle: 'hidden',
+          hasShadow: false,
+          backgroundColor: '#00000000',
+          fullscreen: false,
+          fullscreenable: true,  // 允许全屏
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+          },
+        });
+      } else {
+        // 非Windows平台使用原来的配置
+        this.$win = new BrowserWindow({
+          title: 'screenshots',
+          x: display.x,
+          y: display.y,
+          width: display.width,
+          height: display.height,
+          useContentSize: true,
+          type: windowTypes[process.platform],
+          frame: false,
+          show: false,
+          autoHideMenuBar: true,
+          transparent: true,
+          resizable: false,
+          movable: false,
+          minimizable: false,
+          maximizable: false,
+          focusable: true,
+          skipTaskbar: true,
+          alwaysOnTop: true,
+          fullscreen: false,
+          fullscreenable: false,
+          kiosk: true,
+          backgroundColor: '#00000000',
+          titleBarStyle: 'hidden',
+          hasShadow: false,
+          paintWhenInitiallyHidden: false,
+          roundedCorners: false,
+          enableLargerThanScreen: false,
+          acceptFirstMouse: true,
+        });
+      }
+
+      // 创建窗口后立即设置 skipTaskbar，防止任务栏图标出现
+      this.$win.setSkipTaskbar(true);
 
       this.emit('windowCreated', this.$win);
       this.$win.on('show', () => {
         this.$win?.focus();
-        this.$win?.setKiosk(true);
+        // 只在非Windows平台设置kiosk模式，避免触发任务栏显示
+        if (process.platform !== 'win32') {
+          this.$win?.setKiosk(true);
+        }
+        // 确保窗口显示时不在任务栏中
+        this.$win?.setSkipTaskbar(true);
       });
 
       this.$win.on('closed', () => {
@@ -272,6 +369,9 @@ export default class Screenshots extends Events {
     }
 
     this.$win.setBrowserView(this.$view);
+
+    // 设置BrowserView后，再次确保不在任务栏中
+    this.$win.setSkipTaskbar(true);
 
     // 适定平台
     if (process.platform === 'darwin') {
@@ -294,7 +394,17 @@ export default class Screenshots extends Events {
       height: display.height,
     });
     this.$win.setAlwaysOnTop(true);
+    
+    // 所有平台都使用全屏模式确保正确覆盖屏幕
+    this.$win.setFullScreen(true);
+    
+    // 在显示窗口前，确保不在任务栏中
+    this.$win.setSkipTaskbar(true);
+    
     this.$win.show();
+    
+    // 窗口显示后，再次确保不在任务栏中
+    this.$win.setSkipTaskbar(true);
   }
 
   private async capture(display: Display): Promise<string> {
@@ -368,9 +478,9 @@ export default class Screenshots extends Events {
   }
 
   /**
-   * 绑定ipc时间处理
+   * 绑定ipc事件处理
    */
-  private listenIpc(): void {
+  private static listenIpc(): void {
     // 使用静态变量确保全局只注册一次IPC监听器
     if (Screenshots.ipcListenersRegistered) {
       return;
@@ -378,10 +488,8 @@ export default class Screenshots extends Events {
 
     Screenshots.ipcListenersRegistered = true;
 
-    // 先移除已存在的监听器，避免重复注册
-    ipcMain.removeAllListeners('SCREENSHOTS:ok');
-    ipcMain.removeAllListeners('SCREENSHOTS:cancel');
-    ipcMain.removeAllListeners('SCREENSHOTS:save');
+    // 先清理已存在的监听器
+    Screenshots.cleanupIpcListeners();
 
     /**
      * OK事件 - 使用静态方法处理，避免this绑定问题
@@ -399,6 +507,16 @@ export default class Screenshots extends Events {
     ipcMain.on('SCREENSHOTS:save', Screenshots.handleSaveEvent);
   }
 
+  /**
+   * 清理 IPC 监听器
+   */
+  private static cleanupIpcListeners(): void {
+    ipcMain.removeAllListeners('SCREENSHOTS:ok');
+    ipcMain.removeAllListeners('SCREENSHOTS:cancel');
+    ipcMain.removeAllListeners('SCREENSHOTS:save');
+    Screenshots.ipcListenersRegistered = false;
+  }
+
   // 静态变量用于存储当前活跃的Screenshots实例
   private static activeInstance: Screenshots | null = null;
 
@@ -408,7 +526,11 @@ export default class Screenshots extends Events {
   }
 
   // 静态事件处理方法
-  private static handleOkEvent = (e: any, buffer: Buffer, data: ScreenshotsData) => {
+  private static handleOkEvent = (
+    e: any,
+    buffer: Buffer,
+    data: ScreenshotsData,
+  ) => {
     const instance = Screenshots.activeInstance;
     if (!instance) return;
 
@@ -424,6 +546,8 @@ export default class Screenshots extends Events {
       return;
     }
     clipboard.writeImage(nativeImage.createFromBuffer(buffer));
+    
+    // 只结束截图，不销毁实例，允许重复使用
     instance.endCapture();
   };
 
@@ -438,57 +562,156 @@ export default class Screenshots extends Events {
     if (event.defaultPrevented) {
       return;
     }
+    
+    // 只结束截图，不销毁实例，允许重复使用
     instance.endCapture();
   };
 
-  private static handleSaveEvent = async (e: any, buffer: Buffer, data: ScreenshotsData) => {
+  private static handleSaveEvent = async (
+    e: any,
+    buffer: Buffer,
+    data: ScreenshotsData,
+  ) => {
     const instance = Screenshots.activeInstance;
     if (!instance) return;
 
-    instance.logger(
-      'SCREENSHOTS:save buffer.length %d, data: %o',
-      buffer.length,
-      data,
-    );
-
-    const event = new Event();
-    instance.emit('save', event, buffer, data);
-    if (event.defaultPrevented || !instance.$win) {
+    // 防止重复触发 - 强制防抖机制
+    if (Screenshots.isSaving) {
+      instance.logger(
+        'SCREENSHOTS:save already in progress, ignoring duplicate call',
+      );
       return;
     }
 
-    const time = new Date();
-    const year = time.getFullYear();
-    const month = padStart(time.getMonth() + 1, 2, '0');
-    const date = padStart(time.getDate(), 2, '0');
-    const hours = padStart(time.getHours(), 2, '0');
-    const minutes = padStart(time.getMinutes(), 2, '0');
-    const seconds = padStart(time.getSeconds(), 2, '0');
-    const milliseconds = padStart(time.getMilliseconds(), 3, '0');
+    // 生成唯一的任务ID
+    Screenshots.saveTaskId += 1;
+    const currentTaskId = Screenshots.saveTaskId;
 
-    instance.$win.setAlwaysOnTop(false);
+    Screenshots.isSaving = true;
 
-    const { canceled, filePath } = await dialog.showSaveDialog(instance.$win, {
-      defaultPath: `${year}${month}${date}${hours}${minutes}${seconds}${milliseconds}.png`,
-      filters: [
-        { name: 'Image (png)', extensions: ['png'] },
-        { name: 'All Files', extensions: ['*'] },
-      ],
+    // 添加延迟，确保只处理最后一次调用
+    // await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 200);
     });
 
-    if (!instance.$win) {
-      instance.emit('afterSave', new Event(), buffer, data, false); // isSaved = false
+    // 检查是否有新的任务，如果有则放弃当前任务
+    if (Screenshots.saveTaskId !== currentTaskId) {
+      instance.logger('SCREENSHOTS:save task superseded, abandoning');
+      Screenshots.isSaving = false;
       return;
     }
 
-    instance.$win.setAlwaysOnTop(true);
-    if (canceled || !filePath) {
-      instance.emit('afterSave', new Event(), buffer, data, false); // isSaved = false
-      return;
-    }
+    try {
+      instance.logger(
+        'SCREENSHOTS:save buffer.length %d, data: %o, taskId: %d',
+        buffer.length,
+        data,
+        currentTaskId,
+      );
 
-    await fs.writeFile(filePath, buffer);
-    instance.emit('afterSave', new Event(), buffer, data, true); // isSaved = true
-    instance.endCapture();
+      const event = new Event();
+      instance.emit('save', event, buffer, data);
+      if (event.defaultPrevented || !instance.$win) {
+        return;
+      }
+
+      const time = new Date();
+      const year = time.getFullYear();
+      const month = padStart(time.getMonth() + 1, 2, '0');
+      const date = padStart(time.getDate(), 2, '0');
+      const hours = padStart(time.getHours(), 2, '0');
+      const minutes = padStart(time.getMinutes(), 2, '0');
+      const seconds = padStart(time.getSeconds(), 2, '0');
+      const milliseconds = padStart(time.getMilliseconds(), 3, '0');
+
+      // 保存原始的 alwaysOnTop 状态
+      const wasAlwaysOnTop = instance.$win.isAlwaysOnTop();
+      
+      // 只有在需要时才修改 alwaysOnTop 状态
+      if (wasAlwaysOnTop) {
+        instance.$win.setAlwaysOnTop(false);
+      }
+
+      // 确保窗口不会出现在任务栏中
+      instance.$win.setSkipTaskbar(true);
+
+      const { canceled, filePath } = await dialog.showSaveDialog(
+        instance.$win,
+        {
+          defaultPath: `${year}${month}${date}${hours}${minutes}${seconds}${milliseconds}.png`,
+          filters: [
+            { name: 'Image (png)', extensions: ['png'] },
+            { name: 'All Files', extensions: ['*'] },
+          ],
+        },
+      );
+
+      if (!instance.$win || instance.$win.isDestroyed()) {
+        instance.emit('afterSave', new Event(), buffer, data, false);
+        return;
+      }
+
+      // 恢复原始的 alwaysOnTop 状态
+      if (wasAlwaysOnTop) {
+        instance.$win.setAlwaysOnTop(true);
+      }
+
+      // 确保窗口继续不在任务栏中显示
+      instance.$win.setSkipTaskbar(true);
+
+      if (canceled || !filePath) {
+        instance.emit('afterSave', new Event(), buffer, data, false);
+        // 即使取消也要结束截图，但不销毁实例
+        instance.endCapture();
+        return;
+      }
+
+      await fs.writeFile(filePath, buffer);
+      instance.emit('afterSave', new Event(), buffer, data, true);
+      
+      // 结束截图，但不销毁实例，允许重复使用
+      instance.endCapture();
+    } catch (error) {
+      instance.logger('SCREENSHOTS:save error:', error);
+      instance.emit('afterSave', new Event(), buffer, data, false);
+      
+      // 错误时也要结束截图，但不销毁实例
+      instance.endCapture();
+    } finally {
+      // 确保在任何情况下都重置保存状态
+      Screenshots.isSaving = false;
+    }
   };
+
+  /**
+   * 确保隐藏的父窗口存在
+   */
+  private static ensureHiddenParent(): void {
+    if (!Screenshots.$hiddenParent || Screenshots.$hiddenParent.isDestroyed()) {
+      Screenshots.$hiddenParent = new BrowserWindow({
+        title: 'hidden-parent',
+        show: false,
+        skipTaskbar: true,
+        width: 1,
+        height: 1,
+        frame: false,
+        transparent: true,
+        resizable: false,
+        movable: false,
+        minimizable: false,
+        maximizable: false,
+        closable: false,
+        focusable: false,
+        alwaysOnTop: false,
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+        },
+      });
+      
+      // 确保父窗口永远不显示
+      Screenshots.$hiddenParent.setSkipTaskbar(true);
+    }
+  }
 }
